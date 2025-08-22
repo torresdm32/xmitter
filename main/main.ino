@@ -39,17 +39,17 @@
 #define RX_TIMEOUT_VALUE                            1000
 #define BUFFER_SIZE                                 30 // Define the payload size here
 
+  // Defining pins for horizontal and vertical directions of left and right joysticks
 #define LHZ_PIN 3
 #define LVT_PIN 2
 #define RHZ_PIN 20
 #define RVT_PIN 19
 
+  // Initializing variables to carry the values of the analog reads of each joystick movement
 int LHZ, LVT, RHZ, RVT;
 
 char txpacket[BUFFER_SIZE];
 char rxpacket[BUFFER_SIZE];
-
-double txNumber;
 
 bool lora_idle=true;
 
@@ -61,8 +61,6 @@ void setup() {
     Serial.begin(115200);
     Mcu.begin(HELTEC_BOARD,SLOW_CLK_TPYE);
 	
-    txNumber=0;
-
     RadioEvents.TxDone = OnTxDone;
     RadioEvents.TxTimeout = OnTxTimeout;
     
@@ -81,21 +79,20 @@ void loop()
 	if(lora_idle == true)
 	{
     delay(1000);
-		txNumber += 0.01;
-		sprintf(txpacket,"Hello world number %0.2f",txNumber);  //start a package
-   
-		Serial.printf("\r\nsending packet \"%s\" , length %d\r\n",txpacket, strlen(txpacket));
 
-		Radio.Send( (uint8_t *)txpacket, strlen(txpacket) ); //send the package out	
-    lora_idle = false;
-
-      //Using this space to test AnalogRead of all pins
+      // Capture the values of the analog reads of each joystick movement as ints
     LHZ = analogRead(LHZ_PIN);
     LVT = analogRead(LVT_PIN);
     RHZ = analogRead(RHZ_PIN);
     RVT = analogRead(RVT_PIN);
 
-    Serial.printf("%d, %d, %d, %d\n", LHZ, LVT, RHZ, RVT);
+      // Assembling a packet of comma separated values
+		sprintf(txpacket,"%d,%d,%d,%d",LHZ, LVT, RHZ, RVT);
+
+		Serial.printf("Sending packet: %s\n",txpacket);
+
+		Radio.Send( (uint8_t *)txpacket, strlen(txpacket) ); //send the package out	
+    lora_idle = false;
     
 	}
   Radio.IrqProcess( );
