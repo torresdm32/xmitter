@@ -39,6 +39,13 @@
 #define RX_TIMEOUT_VALUE                            1000
 #define BUFFER_SIZE                                 30 // Define the payload size here
 
+#define LHZ_PIN 3
+#define LVT_PIN 2
+#define RHZ_PIN 20
+#define RVT_PIN 19
+
+int LHZ, LVT, RHZ, RVT;
+
 char txpacket[BUFFER_SIZE];
 char rxpacket[BUFFER_SIZE];
 
@@ -81,6 +88,15 @@ void loop()
 
 		Radio.Send( (uint8_t *)txpacket, strlen(txpacket) ); //send the package out	
     lora_idle = false;
+
+      //Using this space to test AnalogRead of all pins
+    LHZ = analogRead(LHZ_PIN);
+    LVT = analogRead(LVT_PIN);
+    RHZ = analogRead(RHZ_PIN);
+    RVT = analogRead(RVT_PIN);
+
+    Serial.printf("%d, %d, %d, %d\n", LHZ, LVT, RHZ, RVT);
+    
 	}
   Radio.IrqProcess( );
 }
