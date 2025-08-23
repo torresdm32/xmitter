@@ -78,7 +78,7 @@ void loop()
 {
 	if(lora_idle == true)
 	{
-    delay(1000);
+    delay(15);
 
       // Capture the values of the analog reads of each joystick movement as ints
     LHZ = analogRead(LHZ_PIN);
