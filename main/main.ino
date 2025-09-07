@@ -31,13 +31,12 @@
 #define LORA_PREAMBLE_LENGTH 8
 #define LORA_FIX_LENGTH_PAYLOAD_ON false
 #define LORA_IQ_INVERSION_ON false
-#define BUFFER_SIZE 4   // Encrypted 4-byte packet
+#define BUFFER_SIZE 6   // seq(1) + joystick(4) + CRC(1)
 
-char txpacket[BUFFER_SIZE];
 static RadioEvents_t RadioEvents;
 bool lora_idle = true;
 
-// ChaCha32 key & nonce (testing)
+// ChaCha32 key & nonce
 uint8_t key[32] = {
   0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
   0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
@@ -50,56 +49,94 @@ uint8_t nonce[12] = {
   0x00,0x00,0x00,0x03
 };
 
-uint8_t plaintext[4];
-uint8_t ciphertext[4];
+uint8_t txPayload[BUFFER_SIZE];  // sequence + joystick + CRC
+uint8_t plaintext[4];            // joystick bytes
+uint8_t ciphertext[BUFFER_SIZE];
 
+uint8_t seq = 0;
+
+// --------------------
+// CRC helper
+// --------------------
+uint8_t crc8(const uint8_t* data, size_t len) {
+    uint8_t crc = 0;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t b = 0; b < 8; b++) {
+            if (crc & 0x80) crc = (crc << 1) ^ 0x07;
+            else crc <<= 1;
+        }
+    }
+    return crc;
+}
+
+// --------------------
+// Callbacks
+// --------------------
 void OnTxDone(void) { lora_idle = true; }
 void OnTxTimeout(void) { Radio.Sleep(); lora_idle = true; }
 
+// --------------------
+// Setup
+// --------------------
 void setup() {
-  Serial.begin(115200);
-  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+    Serial.begin(115200);
+    Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 
-  analogReadResolution(8); // 8-bit ADC for historical config
+    analogReadResolution(8); // 8-bit ADC
 
-  RadioEvents.TxDone = OnTxDone;
-  RadioEvents.TxTimeout = OnTxTimeout;
+    RadioEvents.TxDone = OnTxDone;
+    RadioEvents.TxTimeout = OnTxTimeout;
 
-  Radio.Init(&RadioEvents);
-  Radio.SetChannel(RF_FREQUENCY);
-  Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
-                    LORA_SPREADING_FACTOR, LORA_CODINGRATE,
-                    LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
-                    true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
+    Radio.Init(&RadioEvents);
+    Radio.SetChannel(RF_FREQUENCY);
+    Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
+                      LORA_SPREADING_FACTOR, LORA_CODINGRATE,
+                      LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
+                      true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
 
-  Serial.println("LoRa Transmitter w/ ChaCha32Arduino");
+    Serial.println("LoRa Transmitter w/ ChaCha32 + CRC & SeqID");
 }
 
+// --------------------
+// Loop
+// --------------------
 void loop() {
-  if (lora_idle) {
-    lora_idle = false;
+    if (lora_idle) {
+        lora_idle = false;
 
-    // Read joysticks
-    plaintext[0] = (uint8_t)analogRead(LHZ_PIN);
-    plaintext[1] = (uint8_t)analogRead(LVT_PIN);
-    plaintext[2] = (uint8_t)analogRead(RHZ_PIN);
-    plaintext[3] = (uint8_t)analogRead(RVT_PIN);
+        // Read joystick values
+        plaintext[0] = (uint8_t)analogRead(LHZ_PIN);
+        plaintext[1] = (uint8_t)analogRead(LVT_PIN);
+        plaintext[2] = (uint8_t)analogRead(RHZ_PIN);
+        plaintext[3] = (uint8_t)analogRead(RVT_PIN);
 
-    // Encrypt
-    chacha32_encrypt(key, nonce, plaintext, ciphertext, sizeof(plaintext));
+        // Build payload: seq + joystick + crc
+        txPayload[0] = seq;
+        memcpy(&txPayload[1], plaintext, 4);
+        txPayload[5] = crc8(plaintext, 4);
 
-    // Send encrypted packet
-    Radio.Send(ciphertext, sizeof(ciphertext));
+        // Encrypt
+        chacha32_encrypt(key, nonce, txPayload, ciphertext, BUFFER_SIZE);
 
-    Serial.print("Sent plaintext: ");
-    for(int i=0;i<4;i++) Serial.print(plaintext[i], DEC), Serial.print(' ');
-    Serial.print(" -> ciphertext: ");
-    for(int i=0;i<4;i++) Serial.print(ciphertext[i], HEX), Serial.print(' ');
-    Serial.println();
-  }
+        // Send
+        Radio.Send(ciphertext, BUFFER_SIZE);
 
-  Radio.IrqProcess();
-  delay(10);
+        // Debug print
+        Serial.print("Seq: "); Serial.print(seq);
+        Serial.print(" | Plain: ");
+        for (int i = 0; i < 4; i++) Serial.print(plaintext[i]), Serial.print(" ");
+        Serial.print("| Cipher: ");
+        for (int i = 0; i < BUFFER_SIZE; i++) Serial.print(ciphertext[i], HEX), Serial.print(" ");
+        Serial.print("| CRC "); Serial.println((txPayload[5] == crc8(plaintext,4)) ? "OK" : "FAIL");
+
+        // Increment sequence
+        seq++;
+
+        delay(10);  // small delay to avoid overloading radio
+    }
+
+    Radio.IrqProcess();
 }
 
 
