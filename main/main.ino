@@ -12,10 +12,15 @@
 /                                                             /
 *//////////////////////////////////////////////////////////////
 
-#include "LoRaWan_APP.h"
-#include "Arduino.h"
-#include <AES.h>
-#include <CTR.h>
+#include <Arduino.h>
+#include <LoRaWan_APP.h>
+#include <ChaCha32.h>
+
+// Pin definitions for joysticks
+#define LHZ_PIN 3
+#define LVT_PIN 2
+#define RHZ_PIN 20
+#define RVT_PIN 19
 
 // LoRa configuration
 #define RF_FREQUENCY 915000000
@@ -24,99 +29,81 @@
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODINGRATE 1
 #define LORA_PREAMBLE_LENGTH 8
-#define LORA_FIX_LENGTH_PAYLOAD_ON true
+#define LORA_FIX_LENGTH_PAYLOAD_ON false
 #define LORA_IQ_INVERSION_ON false
+#define BUFFER_SIZE 4   // Encrypted 4-byte packet
 
-// Joystick pins
-#define LHZ_PIN 3
-#define LVT_PIN 2
-#define RHZ_PIN 20
-#define RVT_PIN 19
-
-// Packet buffers
-uint8_t txPacket[6];         // Plaintext: 4 ADC + sequence + CRC
-uint8_t encryptedPacket[6];  // Ciphertext
-
+char txpacket[BUFFER_SIZE];
 static RadioEvents_t RadioEvents;
 bool lora_idle = true;
-uint8_t sequenceNumber = 0;
 
-// AES-128 CTR object (Crypto library)
-byte aesKey[16] = { /* your 128-bit key */ };
-CTR<AES128> ctr;
+// ChaCha32 key & nonce (testing)
+uint8_t key[32] = {
+  0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+  0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
+  0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+  0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F
+};
+uint8_t nonce[12] = {
+  0x00,0x00,0x00,0x01,
+  0x00,0x00,0x00,0x02,
+  0x00,0x00,0x00,0x03
+};
 
-// CRC8 calculation
-uint8_t calculateCRC8(uint8_t *data, uint8_t length) {
-    uint8_t crc = 0x00;
-    for (uint8_t i = 0; i < length; i++) {
-        crc ^= data[i];
-        for (uint8_t j = 0; j < 8; j++) {
-            if (crc & 0x80) crc = (crc << 1) ^ 0x07;
-            else crc <<= 1;
-        }
-    }
-    return crc;
-}
+uint8_t plaintext[4];
+uint8_t ciphertext[4];
 
-// LoRa callbacks
 void OnTxDone(void) { lora_idle = true; }
 void OnTxTimeout(void) { Radio.Sleep(); lora_idle = true; }
 
 void setup() {
-    Serial.begin(115200);
-    Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+  Serial.begin(115200);
+  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 
-    // Set ADC to 8-bit resolution (0-255)
-    analogReadResolution(8);
+  analogReadResolution(8); // 8-bit ADC for historical config
 
-    // LoRa radio setup
-    RadioEvents.TxDone = OnTxDone;
-    RadioEvents.TxTimeout = OnTxTimeout;
-    Radio.Init(&RadioEvents);
-    Radio.SetChannel(RF_FREQUENCY);
-    Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
-                      LORA_SPREADING_FACTOR, LORA_CODINGRATE,
-                      LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
-                      true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
+  RadioEvents.TxDone = OnTxDone;
+  RadioEvents.TxTimeout = OnTxTimeout;
 
-    // Initialize AES CTR key
-    ctr.setKey(aesKey, sizeof(aesKey));
+  Radio.Init(&RadioEvents);
+  Radio.SetChannel(RF_FREQUENCY);
+  Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
+                    LORA_SPREADING_FACTOR, LORA_CODINGRATE,
+                    LORA_PREAMBLE_LENGTH, LORA_FIX_LENGTH_PAYLOAD_ON,
+                    true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
+
+  Serial.println("LoRa Transmitter w/ ChaCha32Arduino");
 }
 
 void loop() {
-    if (!lora_idle) {
-        Radio.IrqProcess();
-        return;
-    }
-
-    // Read joystick analogs (0-255)
-    txPacket[0] = analogRead(LHZ_PIN);
-    txPacket[1] = analogRead(LVT_PIN);
-    txPacket[2] = analogRead(RHZ_PIN);
-    txPacket[3] = analogRead(RVT_PIN);
-
-    txPacket[4] = sequenceNumber++;             // Sequence number
-    txPacket[5] = calculateCRC8(txPacket, 5);  // CRC8
-
-    // Set IV/nonce for CTR mode (use sequence number)
-    byte iv[16] = {0};
-    iv[0] = txPacket[4];
-
-    // Encrypt 6-byte packet using Crypto library
-    ctr.setIV(iv, sizeof(iv));
-    ctr.encrypt(txPacket, encryptedPacket, sizeof(txPacket));
-
-    // Debug output
-    Serial.print("Sending encrypted packet: ");
-    for (int i = 0; i < 6; i++) Serial.printf("%02X ", encryptedPacket[i]);
-    Serial.println();
-
-    // Send packet over LoRa
-    Radio.Send(encryptedPacket, 6);
+  if (lora_idle) {
     lora_idle = false;
 
-    Radio.IrqProcess();
+    // Read joysticks
+    plaintext[0] = (uint8_t)analogRead(LHZ_PIN);
+    plaintext[1] = (uint8_t)analogRead(LVT_PIN);
+    plaintext[2] = (uint8_t)analogRead(RHZ_PIN);
+    plaintext[3] = (uint8_t)analogRead(RVT_PIN);
+
+    // Encrypt
+    chacha32_encrypt(key, nonce, plaintext, ciphertext, sizeof(plaintext));
+
+    // Send encrypted packet
+    Radio.Send(ciphertext, sizeof(ciphertext));
+
+    Serial.print("Sent plaintext: ");
+    for(int i=0;i<4;i++) Serial.print(plaintext[i], DEC), Serial.print(' ');
+    Serial.print(" -> ciphertext: ");
+    for(int i=0;i<4;i++) Serial.print(ciphertext[i], HEX), Serial.print(' ');
+    Serial.println();
+  }
+
+  Radio.IrqProcess();
+  delay(10);
 }
+
+
+
 
 /*
 #include "LoRaWan_APP.h"
